@@ -138,7 +138,11 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
 // associate a given bounding box with the keypoints it contains
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
-    // ...
+    for (cv::DMatch match : kptMatches) {
+        if (boundingBox.roi.contains(kptsCurr[match.trainIdx].pt)) {
+            boundingBox.kptMatches.push_back(match);
+        }
+    }
 }
 
 
@@ -146,14 +150,53 @@ void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint
 void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, 
                       std::vector<cv::DMatch> kptMatches, double frameRate, double &TTC, cv::Mat *visImg)
 {
-    // ...
+    vector<double> distRatios;
+    for (auto it1 = kptMatches.begin(); it1 != kptMatches.end() - 1; ++it1) {
+        cv::KeyPoint kpOuterCurr = kptsCurr.at(it1->trainIdx);
+        cv::KeyPoint kpOuterPrev = kptsPrev.at(it1->queryIdx);
+
+        for (auto it2 = kptMatches.begin() + 1; it2 != kptMatches.end(); ++it2) {
+            cv::KeyPoint kpInnerCurr = kptsCurr.at(it2->trainIdx);
+            cv::KeyPoint kpInnerPrev = kptsPrev.at(it2->queryIdx);
+
+            const double distCurr = cv::norm(kpOuterCurr.pt - kpInnerCurr.pt);
+            const double distPrev = cv::norm(kpOuterPrev.pt - kpInnerPrev.pt);
+
+            constexpr double minDist = 100.0;
+
+            if (distPrev > std::numeric_limits<double>::epsilon() && distCurr >= minDist) {
+                double distRatio = distCurr / distPrev;
+                distRatios.push_back(distRatio);
+            }
+        }
+    }
+
+    if (distRatios.empty())
+    {
+        TTC = std::numeric_limits<double>::quiet_NaN();
+        return;
+    }
+
+    std::sort(distRatios.begin(), distRatios.end());
+    const auto medianDistRatio = distRatios[distRatios.size() / 2];
+
+    TTC = -1.0 / frameRate / (1 - medianDistRatio);
 }
 
 
 void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
                      std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
 {
-    // ...
+    const auto mean_x_prev = accumulate(lidarPointsPrev.begin(), lidarPointsPrev.end(), 0.0, [](const auto &a, const auto &b)
+    {
+        return a + b.x;
+    }) / lidarPointsPrev.size();
+    const auto mean_x_curr = accumulate(lidarPointsCurr.begin(), lidarPointsCurr.end(), 0.0, [](const auto &a, const auto &b)
+    {
+        return a + b.x;
+    }) / lidarPointsCurr.size();
+
+    TTC = mean_x_curr * (1.0 / frameRate) / (mean_x_prev - mean_x_curr);
 }
 
 
