@@ -198,6 +198,8 @@ void detKeypointsModern(std::vector<cv::KeyPoint> &keypoints, cv::Mat &img, std:
         throw invalid_argument(detectorType + " is not a valid detector type");
     }
 
+    detector->detect(img, keypoints);
+
     bVis = false;
     if (bVis)
     {
