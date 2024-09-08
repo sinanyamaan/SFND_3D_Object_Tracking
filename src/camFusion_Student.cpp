@@ -18,20 +18,20 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
     cv::Mat X(4, 1, cv::DataType<double>::type);
     cv::Mat Y(3, 1, cv::DataType<double>::type);
 
-    for (auto it1 = lidarPoints.begin(); it1 != lidarPoints.end(); ++it1)
+    for (auto & lidarPoint : lidarPoints)
     {
         // assemble vector for matrix-vector-multiplication
-        X.at<double>(0, 0) = it1->x;
-        X.at<double>(1, 0) = it1->y;
-        X.at<double>(2, 0) = it1->z;
+        X.at<double>(0, 0) = lidarPoint.x;
+        X.at<double>(1, 0) = lidarPoint.y;
+        X.at<double>(2, 0) = lidarPoint.z;
         X.at<double>(3, 0) = 1;
 
         // project Lidar point into camera
         Y = P_rect_xx * R_rect_xx * RT * X;
         cv::Point pt;
         // pixel coordinates
-        pt.x = Y.at<double>(0, 0) / Y.at<double>(2, 0); 
-        pt.y = Y.at<double>(1, 0) / Y.at<double>(2, 0); 
+        pt.x = Y.at<double>(0, 0) / Y.at<double>(2, 0);
+        pt.y = Y.at<double>(1, 0) / Y.at<double>(2, 0);
 
         vector<vector<BoundingBox>::iterator> enclosingBoxes; // pointers to all bounding boxes which enclose the current Lidar point
         for (vector<BoundingBox>::iterator it2 = boundingBoxes.begin(); it2 != boundingBoxes.end(); ++it2)
@@ -53,9 +53,9 @@ void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<Li
 
         // check wether point has been enclosed by one or by multiple boxes
         if (enclosingBoxes.size() == 1)
-        { 
+        {
             // add Lidar point to bounding box
-            enclosingBoxes[0]->lidarPoints.push_back(*it1);
+            enclosingBoxes[0]->lidarPoints.push_back(lidarPoint);
         }
 
     } // eof loop over all Lidar points
@@ -159,5 +159,48 @@ void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
 
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
-    // ...
+    map<pair<int, int>, int> bbMatchCount;
+
+    for(const auto& match : matches)
+    {
+        cv::Point prev_pt = prevFrame.keypoints[match.queryIdx].pt;
+        cv::Point curr_pt = currFrame.keypoints[match.trainIdx].pt;
+
+        for(auto& bb_prev : prevFrame.boundingBoxes)
+        {
+            if(bb_prev.roi.contains(prev_pt))
+            {
+                for(auto& bb_curr : currFrame.boundingBoxes)
+                {
+                    if(bb_curr.roi.contains(curr_pt))
+                    {
+                        bbMatchCount[make_pair(bb_prev.boxID, bb_curr.boxID)]+=1;
+                    }
+                }
+            }
+        }
+    }
+
+    vector<pair<pair<int, int>, int> > bbMatchCountVec(bbMatchCount.begin(), bbMatchCount.end());
+    sort(bbMatchCountVec.begin(), bbMatchCountVec.end(), [](const auto &a, const auto &b)
+    {
+        return a.second > b.second;
+    });
+
+
+    vector<int> prevFrameBoxIDs(0);
+    vector<int> currFrameBoxIDs(0);
+
+    for(const auto& [bb_pair, count] : bbMatchCountVec)
+    {
+        const auto& [prev_bb, curr_bb] = bb_pair;
+
+        if(find(prevFrameBoxIDs.begin(), prevFrameBoxIDs.end(), prev_bb) == prevFrameBoxIDs.end() &&
+              find(currFrameBoxIDs.begin(), currFrameBoxIDs.end(), curr_bb) == currFrameBoxIDs.end())
+          {
+                bbBestMatches[prev_bb] = curr_bb;
+                prevFrameBoxIDs.push_back(prev_bb);
+                currFrameBoxIDs.push_back(curr_bb);
+          }
+    }
 }
