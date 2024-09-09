@@ -10,6 +10,53 @@
 
 using namespace std;
 
+double calculateIQR(const vector<double> &data, double &q1, double &q3)
+{
+    vector sortedData(data);
+    sort(sortedData.begin(), sortedData.end());
+
+    const auto n = sortedData.size();
+    q1 = n % 2 == 0 ? (sortedData[n / 4 - 1] + sortedData[n / 4]) / 2 : sortedData[n / 4];
+    q3 = n % 2 == 0 ? (sortedData[n * 3 / 4 - 1] + sortedData[n * 3 / 4]) / 2 : sortedData[n * 3 / 4];
+
+    double iqr;
+
+    if (n % 2 == 0)
+    {
+        iqr = sortedData[n * 3 / 4] - sortedData[n / 4];
+    }
+    else
+    {
+        iqr = sortedData[n * 3 / 4 + 1] - sortedData[n / 4];
+    }
+
+    return iqr;
+}
+
+vector<double> removeOutlierPoints(const vector<LidarPoint> &data)
+{
+
+    vector<double> lidar_data_x;
+    for(const auto& p: data)
+        lidar_data_x.push_back(p.x);
+
+    auto q1 = 0.0, q3 = 0.0;
+    const auto iqr = calculateIQR(lidar_data_x, q1, q3);
+
+    for(auto it = lidar_data_x.begin(); it != lidar_data_x.end();)
+    {
+        if(*it > q3 + iqr * 1.5 || *it < q1 - iqr * 1.5)
+        {
+            it = lidar_data_x.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    return lidar_data_x;
+}
 
 // Create groups of Lidar points whose projection into the camera falls into the same bounding box
 void clusterLidarWithROI(std::vector<BoundingBox> &boundingBoxes, std::vector<LidarPoint> &lidarPoints, float shrinkFactor, cv::Mat &P_rect_xx, cv::Mat &R_rect_xx, cv::Mat &RT)
@@ -187,22 +234,23 @@ void computeTTCCamera(std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPo
 void computeTTCLidar(std::vector<LidarPoint> &lidarPointsPrev,
                      std::vector<LidarPoint> &lidarPointsCurr, double frameRate, double &TTC)
 {
-    const auto mean_x_prev = accumulate(lidarPointsPrev.begin(), lidarPointsPrev.end(), 0.0, [](const auto &a, const auto &b)
-    {
-        return a + b.x;
-    }) / lidarPointsPrev.size();
-    const auto mean_x_curr = accumulate(lidarPointsCurr.begin(), lidarPointsCurr.end(), 0.0, [](const auto &a, const auto &b)
-    {
-        return a + b.x;
-    }) / lidarPointsCurr.size();
+    auto lidarPointsPrevFiltered = removeOutlierPoints(lidarPointsPrev);
+    auto lidarPointsCurrFiltered = removeOutlierPoints(lidarPointsCurr);
 
-    TTC = mean_x_curr * (1.0 / frameRate) / (mean_x_prev - mean_x_curr);
+    sort(lidarPointsPrevFiltered.begin(), lidarPointsPrevFiltered.end());
+    sort(lidarPointsCurrFiltered.begin(), lidarPointsCurrFiltered.end());
+
+    const auto prevSize = lidarPointsPrevFiltered.size();
+    const auto currSize = lidarPointsCurrFiltered.size();
+
+    TTC = lidarPointsCurrFiltered[currSize/2] * (1.0 / frameRate) / (lidarPointsPrevFiltered[prevSize/2] - lidarPointsCurrFiltered[currSize/2]);
 }
 
 
 void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bbBestMatches, DataFrame &prevFrame, DataFrame &currFrame)
 {
-    map<pair<int, int>, int> bbMatchCount;
+    map<pair<int, int>, vector<double>> bbMatchCount;
+    vector<double> distances;
 
     for(const auto& match : matches)
     {
@@ -217,24 +265,56 @@ void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bb
                 {
                     if(bb_curr.roi.contains(curr_pt))
                     {
-                        bbMatchCount[make_pair(bb_prev.boxID, bb_curr.boxID)]+=1;
+                        const auto dist = abs(cv::norm(prev_pt - curr_pt));
+                        bbMatchCount[make_pair(bb_prev.boxID, bb_curr.boxID)].push_back(dist);
+                        distances.push_back(dist);
                     }
                 }
             }
         }
     }
 
-    vector<pair<pair<int, int>, int> > bbMatchCountVec(bbMatchCount.begin(), bbMatchCount.end());
+    // Remove outliers based on IQR
+    double q1, q3;
+    const auto iqr = calculateIQR(distances, q1, q3);
+    const auto lower_bound = q1 - 1.5 * iqr;
+    const auto upper_bound = q3 + 1.5 * iqr;
+
+    for(auto outer_it = bbMatchCount.begin(); outer_it != bbMatchCount.end();)
+    {
+        for(auto inner_it  = outer_it->second.begin(); inner_it != outer_it->second.end();)
+        {
+            if(*inner_it < lower_bound || *inner_it > upper_bound)
+            {
+                inner_it = outer_it->second.erase(inner_it);
+            }
+            else
+            {
+                ++inner_it;
+            }
+        }
+
+        if(outer_it->second.empty())
+        {
+            outer_it = bbMatchCount.erase(outer_it);
+        }
+        else
+        {
+            ++outer_it;
+        }
+    }
+
+    vector<pair<pair<int, int>, vector<double>> > bbMatchCountVec(bbMatchCount.begin(), bbMatchCount.end());
     sort(bbMatchCountVec.begin(), bbMatchCountVec.end(), [](const auto &a, const auto &b)
     {
-        return a.second > b.second;
+        return a.second.size() > b.second.size();
     });
 
 
     vector<int> prevFrameBoxIDs(0);
     vector<int> currFrameBoxIDs(0);
 
-    for(const auto& [bb_pair, count] : bbMatchCountVec)
+    for(const auto& [bb_pair, kp_distances] : bbMatchCountVec)
     {
         const auto& [prev_bb, curr_bb] = bb_pair;
 
