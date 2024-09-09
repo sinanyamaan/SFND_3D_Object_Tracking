@@ -10,27 +10,21 @@
 
 using namespace std;
 
-double calculateIQR(const vector<double> &data, double &q1, double &q3)
+double getPercentile(const vector<double> &data, const double percentile)
 {
     vector sortedData(data);
     sort(sortedData.begin(), sortedData.end());
 
     const auto n = sortedData.size();
-    q1 = n % 2 == 0 ? (sortedData[n / 4 - 1] + sortedData[n / 4]) / 2 : sortedData[n / 4];
-    q3 = n % 2 == 0 ? (sortedData[n * 3 / 4 - 1] + sortedData[n * 3 / 4]) / 2 : sortedData[n * 3 / 4];
+    const auto index = (n - 1) * percentile + 1;
 
-    double iqr;
-
-    if (n % 2 == 0)
+    if(index == floor(index))
     {
-        iqr = sortedData[n * 3 / 4] - sortedData[n / 4];
+        return sortedData[index - 1];
     }
-    else
-    {
-        iqr = sortedData[n * 3 / 4 + 1] - sortedData[n / 4];
-    }
-
-    return iqr;
+    const auto lower = floor(index);
+    const auto upper = ceil(index);
+    return sortedData[lower - 1] + (sortedData[upper - 1] - sortedData[lower - 1]) * (index - lower);
 }
 
 vector<double> removeOutlierPoints(const vector<LidarPoint> &data)
@@ -40,12 +34,15 @@ vector<double> removeOutlierPoints(const vector<LidarPoint> &data)
     for(const auto& p: data)
         lidar_data_x.push_back(p.x);
 
-    auto q1 = 0.0, q3 = 0.0;
-    const auto iqr = calculateIQR(lidar_data_x, q1, q3);
+    const auto q1 = getPercentile(lidar_data_x, 0.25);
+    const auto q3 = getPercentile(lidar_data_x, 0.75);
+    const auto iqr = q3 - q1;
+    const auto lower_bound = q1 - 1.5 * iqr;
+    const auto upper_bound = q3 + 1.5 * iqr;
 
     for(auto it = lidar_data_x.begin(); it != lidar_data_x.end();)
     {
-        if(*it > q3 + iqr * 1.5 || *it < q1 - iqr * 1.5)
+        if(*it < lower_bound || *it > upper_bound)
         {
             it = lidar_data_x.erase(it);
         }
@@ -185,9 +182,36 @@ void show3DObjects(std::vector<BoundingBox> &boundingBoxes, cv::Size worldSize, 
 // associate a given bounding box with the keypoints it contains
 void clusterKptMatchesWithROI(BoundingBox &boundingBox, std::vector<cv::KeyPoint> &kptsPrev, std::vector<cv::KeyPoint> &kptsCurr, std::vector<cv::DMatch> &kptMatches)
 {
+    vector<double> kptDistances;
     for (cv::DMatch match : kptMatches) {
-        if (boundingBox.roi.contains(kptsCurr[match.trainIdx].pt)) {
+        const auto pt_curr = kptsCurr[match.trainIdx].pt;
+        const auto pt_prev = kptsPrev[match.queryIdx].pt;
+        if (boundingBox.roi.contains(pt_curr)) {
             boundingBox.kptMatches.push_back(match);
+            kptDistances.push_back(cv::norm(pt_curr - pt_prev));
+        }
+    }
+
+    const auto q1 = getPercentile(kptDistances, 0.25);
+    const auto q3 = getPercentile(kptDistances, 0.75);
+    const auto iqr = q3 - q1;
+    const auto lower_bound = q1 - 1.5 * iqr;
+    const auto upper_bound = q3 + 1.5 * iqr;
+
+    for(auto it = boundingBox.kptMatches.begin(); it != boundingBox.kptMatches.end();)
+    {
+        const auto pt_curr = kptsCurr[it->trainIdx].pt;
+        const auto pt_prev = kptsPrev[it->queryIdx].pt;
+
+        const auto distance = cv::norm(pt_curr - pt_prev);
+
+        if(distance < lower_bound || distance > upper_bound)
+        {
+            it = boundingBox.kptMatches.erase(it);
+        }
+        else
+        {
+            ++it;
         }
     }
 }
@@ -275,8 +299,9 @@ void matchBoundingBoxes(std::vector<cv::DMatch> &matches, std::map<int, int> &bb
     }
 
     // Remove outliers based on IQR
-    double q1, q3;
-    const auto iqr = calculateIQR(distances, q1, q3);
+    const auto q1 = getPercentile(distances, 0.25);
+    const auto q3 = getPercentile(distances, 0.75);
+    const auto iqr = q3 - q1;
     const auto lower_bound = q1 - 1.5 * iqr;
     const auto upper_bound = q3 + 1.5 * iqr;
 
